@@ -1,15 +1,26 @@
-/**
- ****************************************************************************************
- *
+/******************************************************************************************
+Copyright 2020 Konstantinos Zafeiropoulos. All rights reserved.
 
- ++* @file main.c
- *
- * @brief FreeRTOS template application with retarget
- *
- * Copyright (C) 2015-2019 Dialog Semiconductor.
- * This computer program includes Confidential, Proprietary Information
- * of Dialog Semiconductor. All Rights Reserved.
- *
+Redistribution and use in source and binary forms, with or without modification, 
+are permitted provided that the following conditions are met:
+1. Redistributions of source code must retain the above copyright notice, 
+this list of conditions and the following disclaimer.
+2. Redistributions in binary form must reproduce the above copyright notice, 
+this list of conditions and the following disclaimer in the documentation 
+and/or other materials provided with the distribution.
+3. Neither the name of the copyright holder nor the names of its contributors 
+may be used to endorse or promote products derived from this software without 
+specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND 
+ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES 
+OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL 
+THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, 
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT 
+OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, 
+ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS 
+ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  ****************************************************************************************
  */
 
@@ -51,9 +62,9 @@ bool trigger_drive_select_efficiency = 0;
 bool trigger_drive_select_dynamic = 0;
 bool trigger_drive_select_auto = 0;
 
-
+//bool alarm_activated = 0;
 bool knob_left_long_press = 0;
-bool knob_right_long_press = 0;
+//bool knob_right_long_press = 0;
 bool igla_valet_mode = 0;
 
 uint8_t drive_select_efficiency_clicks = 0;
@@ -95,7 +106,6 @@ extern uint32_t odometer;
 
 char vcprint[VC_PRINT_MAX_LEN];
 uint32_t vc_overwrite_once = 0;
-uint32_t vc_overwrite_init_value = 0;
 
 #undef USE_IGLA_WHEEL
 #define USE_IGLA_MIRROR_KNOB
@@ -117,10 +127,10 @@ uint8_t rxdata[MAX_DATA_BYTES];
 
 bool dk_hw_int_detected(void);
 bool console_initialized = 0;
-bool alarm_activated = 0;
 bool last_ignition_status = 0;
 bool need_send_once_at_boot_up = 1;
 static OS_TIMER app_timer, print_timer, igla_timer;
+extern OS_TIMER pid_timer;
 
 int ee_printf(const char *fmt, ...);
 #define printf ee_printf
@@ -539,13 +549,22 @@ void proccess_rx_data()
         }
 
         if (rxheader.bF.id.SID == MIRROR_KNOB_CAN_ID) {
-                if (rxdata[2] == 0x10) { // Left mirror selected - igla is activated
-                        alarm_activated = 1;
+                if (rxdata[2] == 0x10) { // Left mirror selected - igla valet s activated
+                        // alarm_activated = 1;
+                        if(knob_left_long_press == 0){ // Ignore first press in case it is a manual igla deactivate command
+                                if(igla_valet_mode == 0){
+                                        OS_TIMER_CHANGE_PERIOD(igla_timer, OS_MS_2_TICKS(2500),  OS_TIMER_FOREVER);
+                                        OS_TIMER_RESET(igla_timer, OS_TIMER_FOREVER);
+                                        printf("schedule valet!");
+                                }
+                                igla_valet_mode = 1;
+                        }
+                        knob_left_long_press = 1;
                 }
                 if (rxdata[2] == 0x00) { // Left mirror not selected
-                        alarm_activated = 0;
+                        // alarm_activated = 0;
                         knob_left_long_press = 0;
-                        knob_right_long_press = 0;
+                       // knob_right_long_press = 0;
                 }
                 if (rxdata[2] == 0x01) { // up button knob selected
                         TRIGGER_ACTION(trigger_drive_select_dynamic, "trigger_ds_dynamic! \r\n", 4, 0x02)
@@ -554,21 +573,13 @@ void proccess_rx_data()
                         TRIGGER_ACTION(trigger_drive_select_efficiency,"trigger_ds_efficiency! \r\n", 4, 0x02)
                 }
                 if (rxdata[2] == 0x08) { // deksia button knob selected
-                        if(knob_right_long_press){ // Ignore first press in case it is a manual igla deactivate command
-                                TRIGGER_ACTION(trigger_drive_select_auto,"trigger_ds_auto! \r\n", 4, 0x02)
-                        }
-                        knob_right_long_press = 1;
+                       // if(knob_right_long_press){ // Ignore first press in case it is a manual igla deactivate command
+                       //         TRIGGER_ACTION(trigger_drive_select_auto,"trigger_ds_auto! \r\n", 4, 0x02)
+                       // }
+                       // knob_right_long_press = 1;
                 }
                 if (rxdata[2] == 0x04) { // aristera button knob selected
-                        if(knob_left_long_press){ // Ignore first press in case it is a manual igla deactivate command
-                                if(igla_valet_mode == 0){
-                                        OS_TIMER_CHANGE_PERIOD(igla_timer, OS_MS_2_TICKS(2100),  OS_TIMER_FOREVER);
-                                        OS_TIMER_RESET(igla_timer, OS_TIMER_FOREVER);
-                                        printf("schedule valet!");
-                                }
-                                igla_valet_mode = 1;
-                        }
-                        knob_left_long_press = 1;
+
                 }
         }
 
@@ -586,13 +597,10 @@ void proccess_rx_data()
                 }
 #endif
                 if (rxdata[0] == WHEEL_BUTTON_OK) {
-                        if( vc_overwrite_init_value == 0xFFFF){
-                                vc_overwrite_init_value = 1;
-                                vc_overwrite_once = 0;
+                        if( OS_TIMER_IS_ACTIVE(pid_timer)){
+                                OS_TIMER_STOP(pid_timer, OS_TIMER_FOREVER);
                         }else{
-                                vc_overwrite_init_value = 0xFFFF;
-                                vc_overwrite_once = 0xFFFF;
-                                OS_TIMER_RESET(print_timer, OS_TIMER_FOREVER); //Overwrite VC print with our own message
+                                OS_TIMER_RESET(pid_timer, OS_TIMER_FOREVER); //Overwrite VC print with our own message
                         }
                 }
 //                if (rxdata[0] == WHEEL_BUTTON_VIEW) {
@@ -651,7 +659,7 @@ void proccess_rx_data()
                 memcpy(txConsoleButtonData, rxdata, 8); // Copy latest data
 
 
-                if(alarm_activated == 0){ //No knob selection
+                if(0){ //if(alarm_activated == 0){ //No knob selection
                         if(rxdata[2] & 0x02){ //Ignition status
                                 if(need_send_once_at_boot_up){ //Bootup:  igla should be de-activated
                                         OS_TIMER_CHANGE_PERIOD(igla_timer, OS_MS_2_TICKS(50),  OS_TIMER_FOREVER);
@@ -672,7 +680,7 @@ void proccess_rx_data()
                         }else{
                                 if(last_ignition_status){ //Alarm command already send
                                         OS_TIMER_CHANGE_PERIOD(igla_timer, OS_MS_2_TICKS(12000),  OS_TIMER_FOREVER);
-                                        OS_TIMER_RESET(igla_timer, OS_TIMER_FOREVER); // Send again at least after 10 sec (time the alarm takes to activate again
+                                        OS_TIMER_RESET(igla_timer, OS_TIMER_FOREVER); // Send again at least after 10 sec (time the alarm takes to activate again)
                                 }
                                 last_ignition_status = 0;
                         }
